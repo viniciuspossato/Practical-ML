@@ -1,0 +1,281 @@
+---
+title: "Coursera - Practical Machine Learning"
+author: "Vinicius Possato Rosse"
+date: "04/11/2020"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+---
+
+### LOADING THE PACKAGES
+
+```{r message=FALSE, warning=FALSE, error=FALSE}
+sapply(
+  list(
+    "tidyverse",
+    "caret",
+    "lubridate",
+    "kableExtra"
+    ), 
+  require,character.only = T
+  )
+```
+
+### LOADING THE DATA
+
+```{r include=FALSE}
+training <- read.csv2("pml-training.csv",
+                      header = TRUE,
+                      sep = ",",
+                      stringsAsFactors = FALSE)
+
+
+testing <- read.csv2("pml-testing.csv",
+                      header = TRUE,
+                      sep = ",",
+                      stringsAsFactors = FALSE)
+```
+
+```{r eval=FALSE}
+
+training <- read.csv2("pml-training.csv",
+                      header = TRUE,
+                      sep = ",",
+                      stringsAsFactors = FALSE)
+
+
+testing <- read.csv2("pml-testing.csv",
+                      header = TRUE,
+                      sep = ",",
+                      stringsAsFactors = FALSE)
+
+```
+
+Showing the data:
+
+```{r}
+training %>% dim() # Lines / Columns
+```
+
+```{r}
+testing %>% dim() # Lines / Columns
+```
+
+As all of you could see, the training dataset has a lot columns (more than a hundred), but the most part of them doesn't could be used without some previous analysis.
+
+### ANALYZING THE DATA - P.1 (TRAINING DATASET)
+
+First of all, I will verify the quantity of NA present in each column.
+
+```{r}
+check_NA <- training %>%
+  summarise_all(
+    .funs = list(
+      ~sum(is.na(.))
+    )) %>% mutate_all(
+      .funs = ~ifelse(. >19200,"BAD","GOOD") # Looking for NA
+    ) 
+
+check_NA %>% 
+  pivot_longer(
+    cols = names(.)
+    ) %>% head()
+```
+
+If the number of NA is bigger than 19200 (almost 98%), it means that we have few values available. In other words, would be little difficult to imput this data by some statistical method (knnImpute/bagImpute, for example).
+
+```{r message=FALSE, }
+check_NA %>% 
+  pivot_longer(
+      cols = names(.)
+  ) %>% 
+  group_by(value) %>%
+  summarise(n = n()
+            )
+```
+
+Using the "GOOD" attributes:
+
+```{r}
+training <-
+  training[,which(check_NA=="GOOD")] # 93  covariates
+```
+
+After the previous analysis, only 93 covariates are good to be used
+
+Now, let's sum the empty values ("") using the same method.
+
+```{r}
+check_NULL <- training %>%
+  summarise_all(
+    .funs = list(
+      ~sum(.=="")
+    )
+  ) %>%
+  mutate_all(
+    .funs = list(
+      ~ifelse(. > 19000,"BAD","GOOD")
+    )
+  )
+
+check_NULL %>%
+  pivot_longer(
+    cols = names(.)
+  ) %>% head()
+```
+
+Using the "GOOD" attributes we've got:
+
+```{r}
+check_NULL %>%
+  pivot_longer(
+    cols = names(.)
+  ) %>%
+  group_by(value) %>%
+  summarise(
+    n = n()
+  )
+```
+
+Now, we only have 60 useful variables
+
+```{r}
+training <-
+  training[,which(check_NULL=="GOOD")] # 60 useful covariates
+```
+
+### ANALYZING THE DATA P.2 (TRAINING DATASET)
+
+Let's change some classes of variables.
+
+```{r}
+training <- training[,-1] # The first column is not necessary!
+
+training$classe <-
+  as.factor(training$classe) # Categorical variable (pos. 59)
+
+training$user_name <-
+  as.factor(training$user_name) # Categorical Variable (pos. 1)
+
+training$cvtd_timestamp <-
+  as.POSIXct(training$cvtd_timestamp,
+             format = "%d/%m/%Y %H:%M") # DATE-TIME Variable (pos. 4)
+
+training <- training %>%
+  mutate_at(
+    c(6:58),.funs = as.numeric
+  ) # Changing the character variables into numeric
+
+```
+
+After it:
+
+```{r}
+str(training)
+```
+
+Now, we need to look for correlations between the numeric columns (columns with higher correlation should not be used)
+
+```{r}
+M <- corr_matrix <-
+  cor(training[,-c(1:5,59)]) # Matriz de correlação
+
+diag(M) <- 0 # Giving zero where the correlation is equal to 1
+```
+
+Showing the matrix:
+
+```{r}
+M[1:10,1:5] 
+```
+
+The attributes with more than 85% of correlation are (they should not be used):
+
+```{r}
+vars_highCorr <-
+  colnames(M)[which(abs(M) > 0.85,arr.ind = T)[,2] %>% 
+                unique()] # 12 covariates with more than 85% of correlation
+```
+
+**AFTER ALL OF THESE ANALYSIS, THE MOST USEFUL VARIABLES SELECTED WERE ONLY 46**
+
+```{r}
+training <- 
+  training[,setdiff(names(training),
+                    vars_highCorr)]
+```
+
+Now, we need to change the type of the columns of the testing dataset.
+
+```{r}
+testing <- 
+  testing[,intersect(names(testing), names(training))]
+
+testing$user_name <-
+  as.factor(testing$user_name) 
+
+testing$cvtd_timestamp <-
+  as.POSIXct(testing$cvtd_timestamp,
+             format = "%d/%m/%Y %H:%M") 
+
+testing <- testing %>%
+  mutate_at(
+    c(6:46),.funs = as.numeric
+  )
+```
+
+We obtained:
+
+```{r}
+testing %>%
+  dim()
+```
+
+### FITTING THE MODEL
+
+In this case, we used the Random Forest Algorithm.
+
+```{r include=FALSE}
+
+modFit_sprf <-
+  readRDS("modFit_sprf.rds")
+```
+
+```{r eval=FALSE}
+
+modFit_sprf <-
+  train(classe ~.,
+        data = training,
+        method = "rf",
+        preProcess = c("center","scale"),
+        trControl = trainControl(method = "cv", number = 10)
+        )
+```
+
+Informations about the model I fitted:
+
+```{r}
+modFit_sprf
+```
+
+The attibutes importance:
+
+```{r}
+varImp(modFit_sprf) # The importance of the first 20 variables
+```
+
+### PREDICTING
+
+**Let's predict**
+
+```{r}
+prediction <-
+  predict(modFit_sprf,
+          testing)
+
+prediction
+```
+
